@@ -19,7 +19,7 @@ $two = make_td3('SECOND', 'PERSON', 'CD7654321', 'ITA', '900101', 'M', '300101')
 function claude_body(array $passports, string $stop = 'end_turn'): Response
 {
     return new Response(200, [], json_encode(['stop_reason' => $stop, 'content' => [
-        ['type' => 'tool_use', 'name' => 'report_passports', 'input' => ['passports' => $passports]],
+        ['type' => 'text', 'text' => json_encode(['passports' => $passports])],
     ]]));
 }
 
@@ -61,6 +61,33 @@ t_eq('wrong century from the model corrected by the MRZ', $r->analyzeMany([$img(
 $bad = $lines; $bad[1] = substr_replace($bad[1], '3', 18, 1);
 $r = claude([claude_body([$rec($bad)])]);
 t_eq('altered check digit -> review (model is not trusted)', count($r->analyzeMany([$img('a.png')])[0]['review']) > 0, true);
+
+echo "\nRequest format (regression: Sonnet/Opus 5.5 reject forced tool use with HTTP 400)\n";
+$sent = null;
+$spy = function (\Psr\Http\Message\RequestInterface $req, array $opts) use (&$sent) {
+    $sent = json_decode((string) $req->getBody(), true) + ['_headers' => $req->getHeaders(), '_uri' => (string) $req->getUri()];
+    return \GuzzleHttp\Promise\Create::promiseFor(claude_body([]));
+};
+(new PassportAnalyzer('SECRET-KEY-123', 'claude-sonnet-5-5', '2023-06-01', 4000, new NullLogger(), new NullLogger(), 1, 26, $spy, false))->analyzeMany([$img('a.png')]);
+t_eq('no tools / tool_choice in the request', [isset($sent['tools']), isset($sent['tool_choice'])], [false, false]);
+t_eq('structured output format is requested', $sent['output_config']['format']['type'] ?? null, 'json_schema');
+$walk = function ($n) use (&$walk): bool { // every object schema must forbid extra properties; no unsupported keywords
+    if (!is_array($n)) { return true; }
+    if (($n['type'] ?? null) === 'object' && ($n['additionalProperties'] ?? null) !== false) { return false; }
+    foreach (['minLength', 'maxLength', 'minimum', 'maximum'] as $bad) { if (array_key_exists($bad, $n)) { return false; } }
+    foreach ($n as $child) { if (!$walk($child)) { return false; } }
+    return true;
+};
+t_eq('schema obeys the structured-output limits (additionalProperties:false, no length/range keywords)', $walk($sent['output_config']['format']['schema']), true);
+$enumOk = function ($n) use (&$enumOk): bool { // the API rejects 'type' next to 'enum' for union types
+    if (!is_array($n)) { return true; }
+    if (array_key_exists('enum', $n) && is_array($n['type'] ?? null)) { return false; }
+    foreach ($n as $c) { if (!$enumOk($c)) { return false; } }
+    return true;
+};
+t_eq('no union type next to enum (live API error: Enum value does not match declared type)', $enumOk($sent['output_config']['format']['schema']), true);
+t_eq('API key travels in a header, not in the URL', [isset($sent['_headers']['x-api-key']), str_contains($sent['_uri'], 'SECRET')], [true, false]);
+t_eq('image block + prompt are sent', [$sent['messages'][0]['content'][0]['type'], str_contains($sent['messages'][0]['content'][1]['text'], 'passports')], ['image', true]);
 
 /** Stub reader returning prepared results per source. */
 final class StubReader implements PassportReaderInterface

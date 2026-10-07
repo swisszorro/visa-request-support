@@ -143,6 +143,10 @@ final class GeminiPassportReader implements PassportReaderInterface
             },
             'rejected'    => function ($reason, int $i) use (&$results, $images): void {
                 $msg = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
+                if ($reason instanceof \GuzzleHttp\Exception\RequestException && $reason->hasResponse()) {
+                    // the exception text is cut off after ~120 chars; the full API error explains the cause
+                    $msg = 'HTTP ' . $reason->getResponse()->getStatusCode() . ': ' . substr((string) $reason->getResponse()->getBody(), 0, 500);
+                }
                 $this->logger->error('Gemini API call failed', ['source' => $images[$i]['source'], 'error' => $msg]);
                 $this->diag($images[$i], 'error', 'Analysis service call failed after retries');
                 $results[$i] = null;

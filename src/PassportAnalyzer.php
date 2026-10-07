@@ -19,7 +19,7 @@ use Psr\Log\LoggerInterface;
  * several passports per file, per-file diagnostics, and every read goes through
  * the fail-closed MrzVerifier (check digits decide, not the model).
  *
- * A forced tool call returns schema-conformant JSON.
+ * Structured outputs (JSON schema) return schema-conformant JSON.
  */
 final class PassportAnalyzer implements PassportReaderInterface
 {
@@ -70,46 +70,52 @@ final class PassportAnalyzer implements PassportReaderInterface
         ]);
     }
 
-    private const TOOL = [
-        'name' => 'report_passports',
-        'description' => 'Report every passport data page found in the file. Transcribe the MRZ character by character; do not guess. Use null for anything not clearly visible. Return an empty list if there is no passport.',
-        'input_schema' => [
-            'type' => 'object',
-            'properties' => [
-                'passports' => [
-                    'type' => 'array',
-                    'items' => [
-                        'type' => 'object',
-                        'properties' => [
-                            'mrz' => [
-                                'type' => 'object',
-                                'properties' => [
-                                    'surname'         => ['type' => ['string', 'null']],
-                                    'given_names'     => ['type' => ['string', 'null']],
-                                    'document_number' => ['type' => ['string', 'null']],
-                                    'nationality'     => ['type' => ['string', 'null'], 'description' => 'ISO 3166-1 alpha-3, e.g. CHE, ITA, FRA, CHN, KAZ'],
-                                    'date_of_birth'   => ['type' => ['string', 'null'], 'description' => 'YYYY-MM-DD'],
-                                    'sex'             => ['type' => ['string', 'null'], 'enum' => ['M', 'F', 'X', null]],
-                                    'expiry_date'     => ['type' => ['string', 'null'], 'description' => 'YYYY-MM-DD'],
-                                ],
-                                'required' => ['surname', 'given_names', 'document_number', 'nationality', 'date_of_birth', 'sex', 'expiry_date'],
+    /**
+     * JSON schema for Anthropic "structured outputs" (output_config.format). Forced tool use
+     * (tool_choice tool/any) is rejected by Sonnet 5.5 / Opus 5.5 (HTTP 400), structured outputs
+     * work on all current models and guarantee schema-valid JSON. Limits of that feature: every
+     * object needs additionalProperties:false, no minLength/maxLength/minimum/maximum.
+     */
+    private const SCHEMA = [
+        'type' => 'object',
+        'properties' => [
+            'passports' => [
+                'type' => 'array',
+                'items' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'mrz' => [
+                            'type' => 'object',
+                            'properties' => [
+                                'surname'         => ['type' => ['string', 'null']],
+                                'given_names'     => ['type' => ['string', 'null']],
+                                'document_number' => ['type' => ['string', 'null']],
+                                'nationality'     => ['type' => ['string', 'null']],
+                                'date_of_birth'   => ['type' => ['string', 'null']],
+                                'sex'             => ['enum' => ['M', 'F', 'X', null]], // no 'type' next to enum: the API rejects ['string','null'] + enum
+                                'expiry_date'     => ['type' => ['string', 'null']],
                             ],
-                            'visual' => [
-                                'type' => 'object',
-                                'properties' => [
-                                    'place_of_birth' => ['type' => ['string', 'null'], 'description' => 'as printed in the visual zone (max 60 chars)'],
-                                    'issue_date'     => ['type' => ['string', 'null'], 'description' => 'YYYY-MM-DD'],
-                                ],
-                                'required' => ['place_of_birth', 'issue_date'],
-                            ],
-                            'raw_mrz_lines' => ['type' => 'array', 'items' => ['type' => 'string'], 'description' => 'the MRZ lines exactly as read, 44 characters each for a passport'],
+                            'required' => ['surname', 'given_names', 'document_number', 'nationality', 'date_of_birth', 'sex', 'expiry_date'],
+                            'additionalProperties' => false,
                         ],
-                        'required' => ['mrz', 'visual', 'raw_mrz_lines'],
+                        'visual' => [
+                            'type' => 'object',
+                            'properties' => [
+                                'place_of_birth' => ['type' => ['string', 'null']],
+                                'issue_date'     => ['type' => ['string', 'null']],
+                            ],
+                            'required' => ['place_of_birth', 'issue_date'],
+                            'additionalProperties' => false,
+                        ],
+                        'raw_mrz_lines' => ['type' => 'array', 'items' => ['type' => 'string']],
                     ],
+                    'required' => ['mrz', 'visual', 'raw_mrz_lines'],
+                    'additionalProperties' => false,
                 ],
             ],
-            'required' => ['passports'],
         ],
+        'required' => ['passports'],
+        'additionalProperties' => false,
     ];
 
     /** Per-file problems of the last analyzeMany() run. */
@@ -142,6 +148,10 @@ final class PassportAnalyzer implements PassportReaderInterface
             },
             'rejected'    => function ($reason, int $i) use (&$results, $images): void {
                 $msg = $reason instanceof \Throwable ? $reason->getMessage() : (string) $reason;
+                if ($reason instanceof \GuzzleHttp\Exception\RequestException && $reason->hasResponse()) {
+                    // the exception text is cut off after ~120 chars; the full API error explains the cause
+                    $msg = 'HTTP ' . $reason->getResponse()->getStatusCode() . ': ' . substr((string) $reason->getResponse()->getBody(), 0, 500);
+                }
                 $this->logger->error('Claude API call failed', ['source' => $images[$i]['source'], 'error' => $msg]);
                 $this->diag($images[$i], 'error', 'Analysis service call failed after retries');
                 $results[$i] = null;
@@ -179,14 +189,15 @@ final class PassportAnalyzer implements PassportReaderInterface
             'source' => ['type' => 'base64', 'media_type' => $image['media_type'], 'data' => $image['data']],
         ];
         return (string) json_encode([
-            'model'       => $this->model,
-            'max_tokens'  => $this->maxTokens,
-            'temperature' => 0,
-            'tools'       => [self::TOOL],
-            'tool_choice' => ['type' => 'tool', 'name' => 'report_passports'],
-            'messages'    => [[
+            'model'         => $this->model,
+            'max_tokens'    => $this->maxTokens,
+            'output_config' => ['format' => ['type' => 'json_schema', 'schema' => self::SCHEMA]],
+            'messages'      => [[
                 'role'    => 'user',
-                'content' => [$block, ['type' => 'text', 'text' => PassportPrompt::TEXT . ' Call report_passports with the result.']],
+                'content' => [
+                    $block,
+                    ['type' => 'text', 'text' => PassportPrompt::TEXT . ' Format: the JSON object with the key `passports`.'],
+                ],
             ]],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
@@ -204,13 +215,13 @@ final class PassportAnalyzer implements PassportReaderInterface
             $this->diag($image, 'error', 'Analysis service gave no usable answer (' . ($stop ?: 'invalid response') . ')');
             return null;
         }
-        $input = null;
+        $text = '';
         foreach ($body['content'] ?? [] as $block) {
-            if (($block['type'] ?? '') === 'tool_use' && ($block['name'] ?? '') === 'report_passports') {
-                $input = $block['input'] ?? null;
-                break;
+            if (($block['type'] ?? '') === 'text') {
+                $text .= (string) ($block['text'] ?? '');
             }
         }
+        $input = json_decode($text, true);
         if (!is_array($input) || !is_array($input['passports'] ?? null)) {
             $this->diag($image, 'error', 'Analysis service answer had no passport report');
             return null;
