@@ -177,7 +177,8 @@ final class MrzCheck
         }
         ksort($byDist);
         $closest = array_keys(reset($byDist));
-        return count($closest) === 1 ? $closest[0] : null;
+        // array keys of all-digit candidates come back as int -> cast (strict_types)
+        return count($closest) === 1 ? (string) $closest[0] : null;
     }
 
     private static function editDistance(string $a, string $b): int

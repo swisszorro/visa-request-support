@@ -48,6 +48,19 @@ t_eq('surname disagrees between reads -> review', count($r['review']) > 0, true)
 $r = MrzVerifier::apply(llm_record($good, ['sex' => 'M']), $pivot);
 t_eq('sex disagrees between reads -> review', count($r['review']) > 0, true);
 
+echo "\nMrzCheck::repairDocNumber (regression: all-digit candidates)\n";
+$repaired = null;
+$ok = true;
+try {
+    foreach (['B12345679', 'O12345678', 'I23456789', 'S12345678'] as $field) {
+        $repaired = \BWC\Visa\MrzCheck::repairDocNumber($field, '1');
+        $ok = $ok && ($repaired === null || is_string($repaired));
+    }
+} catch (\TypeError $e) {
+    $ok = false;
+}
+t_eq('repair never throws and always returns ?string', $ok, true);
+
 echo "\nMatcher status\n";
 $app = ['no' => '1', 'full_name' => 'Tester Anna Marie', 'gender' => 'F', 'nationality' => 'CHE', 'date_of_birth' => '1985-03-12',
     'place_of_birth' => 'Utopolis', 'passport_number' => 'AB1234567', 'passport_expiry_date' => '2032-06-30',
