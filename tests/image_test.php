@@ -105,6 +105,32 @@ t_eq('native mode within cap -> PDF passed through', (new ImagePreparer($dir, 16
 try { $prep->prepare($put('broken.pdf', "%PDF-1.4\ngarbage"), 'broken.pdf'); t_eq('corrupt PDF -> ClientError', 'accepted', 'rejected'); }
 catch (ClientError $e) { t_eq('corrupt PDF -> ClientError without paths', str_contains($e->getMessage(), $dir), false); }
 
+echo "\nOversized pages / high-megapixel photos (regression: iPhone scan PDF 1995x2807 pt, 48 MP photos)\n";
+$big = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    . "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 1995 2807]>>endobj\ntrailer<</Root 1 0 R/Size 4>>\n%%EOF\n";
+if ($poppler) {
+    $r = (new ImagePreparer($dir, 1600, 30, 'pdftoppm', 'poppler'))->prepare($put('huge_page.pdf', $big), 'huge_page.pdf');
+    $im = decode($r);
+    t_eq('28x39 inch page renders without "too large" error, long edge <= 1600', [count($r), max(imagesx($im), imagesy($im)) <= 1600], [1, true]);
+    $a4 = str_replace('1995 2807', '595 842', $big);
+    $r = (new ImagePreparer($dir, 2400, 30, 'pdftoppm', 'poppler'))->prepare($put('a4.pdf', $a4), 'a4.pdf');
+    $im = decode($r);
+    t_eq('A4 page keeps ~200 dpi detail (long edge 2400 when maxEdge allows it)', max(imagesx($im), imagesy($im)), 2400);
+}
+$mp48 = imagecreatetruecolor(8064, 6048); // typical 48 MP phone photo
+imagefilledrectangle($mp48, 0, 0, 4000, 6047, imagecolorallocate($mp48, 255, 0, 0));
+ob_start(); imagejpeg($mp48, null, 60); $jpg48 = (string) ob_get_clean();
+imagedestroy($mp48);
+try {
+    $r = $prep->prepare($put('48mp.jpg', $jpg48), '48mp.jpg');
+    $im = decode($r);
+    t_eq('48 MP photo is accepted and downscaled to the long-edge limit', max(imagesx($im), imagesy($im)), 1600);
+} catch (ClientError $e) {
+    t_eq('48 MP photo is accepted (memory_limit ' . ini_get('memory_limit') . ')', $e->getMessage(), 'accepted');
+}
+unset($jpg48);
+t_eq('memory guard: absurd size is refused, small size is fine', [ImagePreparer::fitsInMemory(100000, 100000, 1000), ImagePreparer::fitsInMemory(1000, 1000, 1000)], [false, true]);
+
 echo "\nProcRunner timeout\n";
 $t = microtime(true);
 $r = ProcRunner::run('sleep 10', 1);

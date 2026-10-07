@@ -19,8 +19,10 @@ namespace BWC\Visa;
  */
 final class ImagePreparer
 {
-    /** Hard cap on decoded pixels (decompression-bomb guard; GD needs ~5 bytes/pixel). */
-    private const MAX_PIXELS = 40_000_000;
+    /** Absolute cap on decoded pixels (decompression-bomb guard); the memory check below is stricter in practice. */
+    private const MAX_PIXELS = 150_000_000;
+    /** Long edge (px) PDF pages are rendered to: ~200 dpi on A4, but never a 40 MP raster of an oversized page. */
+    private const PDF_RENDER_EDGE = 2400;
     private const PDFTOPPM_TIMEOUT = 120;
 
     /** @var array<int,array{source:string,page:int,status:string,message:string}> */
@@ -117,10 +119,13 @@ final class ImagePreparer
     private function fromPdf(string $path, string $originalName): array
     {
         $prefix = $this->workDir . '/' . bin2hex(random_bytes(6));
-        // -r 200 dpi is enough for legible MRZ; one extra page tells us whether we truncated.
+        // -scale-to renders every page to the same long edge: ~200 dpi on A4 (enough for a legible MRZ),
+        // but an oversized page (e.g. an iPhone scan "printed" at 72 ppi = 28x39 in) is not blown up
+        // to 40+ MP. One extra page tells us whether we truncated.
         $cmd = sprintf(
-            '%s -png -r 200 -f 1 -l %d %s %s',
+            '%s -png -scale-to %d -f 1 -l %d %s %s',
             escapeshellcmd($this->pdftoppm),
+            max(self::PDF_RENDER_EDGE, $this->maxEdge),
             $this->maxPdfPages + 1,
             escapeshellarg($path),
             escapeshellarg($prefix)
@@ -188,42 +193,73 @@ final class ImagePreparer
             }
             throw new ClientError("Image '{$originalName}' cannot be decoded on this server (GD missing).");
         }
+        if (!self::fitsInMemory($w, $h, strlen($raw))) {
+            throw new ClientError("Image '{$originalName}' ({$w}x{$h} px) is too large for the server's memory limit; please send a smaller scan or a photo with lower resolution.");
+        }
         $src = @imagecreatefromstring($raw);
         if ($src === false) {
             throw new ClientError("Image '{$originalName}' could not be decoded.");
         }
         unset($raw);
 
-        $src = self::applyOrientation($src, $orientation);
-        $w = imagesx($src);
-        $h = imagesy($src);
-        $long = max($w, $h);
-        if ($long > $this->maxEdge) {
-            $scale = $this->maxEdge / $long;
+        // shrink FIRST (the big bitmap is the memory problem), rotate the small result afterwards;
+        // the long edge is the same before and after a 90° turn, so the order does not change the outcome.
+        if (max($w, $h) > $this->maxEdge) {
+            $scale = $this->maxEdge / max($w, $h);
             $dst = imagecreatetruecolor((int) round($w * $scale), (int) round($h * $scale));
             imagecopyresampled($dst, $src, 0, 0, 0, 0, imagesx($dst), imagesy($dst), $w, $h);
             imagedestroy($src);
             $src = $dst;
         }
+        $src = self::applyOrientation($src, $orientation);
 
         // keep lossless sources lossless; everything else (jpeg, bmp, webp) -> jpeg
         ob_start();
         if ($type === 'png') {
             imagepng($src, null, 6);
-            $out = ['image/png'];
+            $out = 'image/png';
         } elseif ($type === 'gif') {
             imagegif($src);
-            $out = ['image/gif'];
+            $out = 'image/gif';
         } else {
             imagejpeg($src, null, 92);
-            $out = ['image/jpeg'];
+            $out = 'image/jpeg';
         }
         $bin = (string) ob_get_clean();
         imagedestroy($src);
         if ($bin === '') {
             throw new ClientError("Image '{$originalName}' could not be re-encoded.");
         }
-        return [$bin, $out[0]];
+        return [$bin, $out];
+    }
+
+    /**
+     * Can GD decode a w x h truecolor bitmap (4 bytes/pixel) next to the already loaded file
+     * and the working set without exceeding PHP's memory_limit? Keeps a safety margin.
+     */
+    public static function fitsInMemory(int $w, int $h, int $rawBytes): bool
+    {
+        $limit = self::memoryLimitBytes();
+        if ($limit < 0) {
+            return true; // unlimited
+        }
+        $needed = $w * $h * 4 + $rawBytes + 48 * 1024 * 1024; // bitmap + file + resample/encode headroom
+        return $needed <= $limit - memory_get_usage(true);
+    }
+
+    private static function memoryLimitBytes(): int
+    {
+        $v = trim((string) ini_get('memory_limit'));
+        if ($v === '' || $v === '-1') {
+            return -1;
+        }
+        $n = (int) $v;
+        return match (strtolower(substr($v, -1))) {
+            'g' => $n * 1024 ** 3,
+            'm' => $n * 1024 ** 2,
+            'k' => $n * 1024,
+            default => $n,
+        };
     }
 
     /** EXIF orientation (1-8) of a JPEG without needing ext-exif; 1 when absent/unreadable. */
