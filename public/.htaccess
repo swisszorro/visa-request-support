@@ -1,0 +1,26 @@
+# Front-controller routing for Apache shared hosting.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    # Apache/CGI strips the Authorization header — forward it to PHP so the
+    # API key (Authorization: Bearer …) reaches the app.
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule ^ - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+    # Serve existing files (test page, assets) directly …
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+    # … everything else goes through the Slim front controller.
+    RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+# Fallback: also expose Authorization via env for CGI/FPM setups.
+<IfModule mod_setenvif.c>
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+</IfModule>
+
+# CORS preflight (the static test page calls the API from the browser)
+<IfModule mod_headers.c>
+    Header always set Access-Control-Allow-Origin "*"
+    Header always set Access-Control-Allow-Headers "Authorization, X-API-Key, X-Signature, X-Timestamp, Content-Type"
+    Header always set Access-Control-Allow-Methods "GET, POST, OPTIONS"
+</IfModule>

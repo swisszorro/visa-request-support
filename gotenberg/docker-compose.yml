@@ -1,0 +1,8 @@
+# Local / VPS run of the Avenir-Gotenberg image (alternative to Cloud Run).
+#   docker compose up --build -d      → http://localhost:3000
+services:
+  gotenberg:
+    build: .
+    ports:
+      - "3000:3000"
+    restart: unless-stopped

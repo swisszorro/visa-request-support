@@ -1,0 +1,21 @@
+/vendor/
+/.env
+/storage/tmp/*
+/storage/output/*
+/storage/*.log
+!/storage/tmp/.gitkeep
+!/storage/output/.gitkeep
+.DS_Store
+
+# proprietary Avenir fonts (licence) - copy them in manually, see resources/fonts/README.md
+/resources/fonts/*.ttf
+/gotenberg/fonts/*.ttf
+# binary duplicate of the gotenberg/ folder
+/gotenberg.zip
+# stale, web-exposed duplicate of tests/mrz_test.php (contained real MRZ data) - delete it from the server
+/public/mrz_test.php
+# logs may contain cleartext passport data
+*.log
+# local secrets / editor
+.env.*
+!.env.example

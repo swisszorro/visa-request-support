@@ -1,0 +1,27 @@
+{
+    "name": "berneworldcup/visa-service",
+    "description": "REST web service that verifies passport copies against an Excel applicant list and fills a Word invitation letter, returned as PDF.",
+    "type": "project",
+    "require": {
+        "php": ">=8.1",
+        "ext-json": "*",
+        "ext-zip": "*",
+        "ext-dom": "*",
+        "ext-mbstring": "*",
+        "slim/slim": "^4.12",
+        "slim/psr7": "^1.6",
+        "phpoffice/phpspreadsheet": "^2.1",
+        "guzzlehttp/guzzle": "^7.8",
+        "vlucas/phpdotenv": "^5.6",
+        "monolog/monolog": "^3.5",
+        "phpmailer/phpmailer": "^6.9"
+    },
+    "autoload": {
+        "psr-4": {
+            "BWC\\Visa\\": "src/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

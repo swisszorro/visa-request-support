@@ -1,0 +1,15 @@
+services:
+  visa:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      # mount source for live editing during development (remove in production)
+      - ./src:/app/src
+      - ./public:/app/public
+      - ./resources:/app/resources
+      - ./tests:/app/tests
+      - ./storage:/app/storage
+    restart: unless-stopped
