@@ -132,7 +132,7 @@ final class MrzVerifier
                 $out[] = "check digit failed or missing: {$label}";
             }
         }
-        foreach (['document_number', 'date_of_birth', 'expiry_date'] as $f) {
+        foreach (['document_number', 'date_of_birth', 'expiry_date', 'surname'] as $f) {
             if (trim((string) ($data['mrz'][$f] ?? '')) === '') {
                 $out[] = "missing field: {$f}";
             }

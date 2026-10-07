@@ -198,11 +198,11 @@ final class VisaController
         // ---- 4. prepare images & analyse passports --------------------------
         // gemini/vision can read PDFs natively (no pdftoppm); the local 'ocr'
         // engine needs rasterised pages, so it always uses poppler.
-        $engine = strtolower(Config::str('PASSPORT_ENGINE', 'gemini'));
+        $engines = $this->engineChain();
         $pdfMode = strtolower(Config::str('PDF_MODE', 'auto'));
         $pdftoppm = Config::str('PDFTOPPM_BIN', 'pdftoppm');
-        if ($engine === 'ocr') {
-            $pdfMode = 'poppler';
+        if (in_array('ocr', $engines, true)) {
+            $pdfMode = 'poppler'; // the local OCR needs rasterised pages
         } elseif ($pdfMode === 'auto') {
             // poppler renders every page separately (many passports per PDF, page cap);
             // native sends the whole PDF in one call (works without binaries, shared hosting)
@@ -542,10 +542,26 @@ final class VisaController
         return array_values(array_unique($out));
     }
 
-    /** Builds the passport reader selected via PASSPORT_ENGINE (ocr|vision). */
+    /** @return string[] engines from PASSPORT_ENGINE, e.g. "vision,ocr" => ['vision','ocr'] (first = primary) */
+    private function engineChain(): array
+    {
+        $list = array_values(array_filter(array_map(
+            static fn ($e) => strtolower(trim($e)),
+            explode(',', Config::str('PASSPORT_ENGINE', 'gemini'))
+        )));
+        return $list === [] ? ['gemini'] : $list;
+    }
+
+    /** Builds the reader (or reader chain) selected via PASSPORT_ENGINE: gemini | vision (alias claude) | ocr. */
     private function makeReader(string $work): PassportReaderInterface
     {
-        $engine = strtolower(Config::str('PASSPORT_ENGINE', 'gemini'));
+        $readers = array_map(fn (string $e) => $this->makeSingleReader($e, $work), $this->engineChain());
+        return count($readers) === 1 ? $readers[0] : new FallbackPassportReader($readers, $this->logger);
+    }
+
+    private function makeSingleReader(string $engine, string $work): PassportReaderInterface
+    {
+        $pivot = Config::int('MRZ_DOB_PIVOT_YEAR', (int) date('y'));
         if ($engine === 'gemini') {
             return new GeminiPassportReader(
                 Config::str('GEMINI_API_KEY'),
@@ -554,17 +570,19 @@ final class VisaController
                 $this->logger,
                 $this->extractionLogger,
                 Config::int('GEMINI_CONCURRENCY', 4),
-                Config::int('MRZ_DOB_PIVOT_YEAR', (int) date('y')),
+                $pivot,
             );
         }
-        if ($engine === 'vision') {
+        if ($engine === 'vision' || $engine === 'claude') {
             return new PassportAnalyzer(
                 Config::str('ANTHROPIC_API_KEY'),
-                Config::str('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
+                Config::str('ANTHROPIC_MODEL', 'claude-sonnet-5-5'),
                 Config::str('ANTHROPIC_VERSION', '2023-06-01'),
-                Config::int('ANTHROPIC_MAX_TOKENS', 1500),
+                Config::int('ANTHROPIC_MAX_TOKENS', 4000),
                 $this->logger,
                 $this->extractionLogger,
+                Config::int('ANTHROPIC_CONCURRENCY', 4),
+                $pivot,
             );
         }
 
@@ -574,7 +592,7 @@ final class VisaController
             $this->extractionLogger,
             Config::str('TESSERACT_BIN', 'tesseract'),
             Config::str('TESSERACT_LANG', 'eng'),
-            Config::int('MRZ_DOB_PIVOT_YEAR', (int) date('y')),
+            $pivot,
             Config::int('MRZ_PREP_WIDTH', 1600),
             Config::str('TESSERACT_MRZ_LANG', 'mrz'),
         );

@@ -48,6 +48,11 @@ t_eq('surname disagrees between reads -> review', count($r['review']) > 0, true)
 $r = MrzVerifier::apply(llm_record($good, ['sex' => 'M']), $pivot);
 t_eq('sex disagrees between reads -> review', count($r['review']) > 0, true);
 
+$r = MrzVerifier::apply(llm_record($good, ['surname' => null, 'given_names' => null]) + [], $pivot);
+$noName = $good; $noName[0] = str_repeat('<', 44); // name line unreadable (glare)
+$r = MrzVerifier::apply(llm_record($noName, ['surname' => null, 'given_names' => null]), $pivot);
+t_eq('surname missing (name line lost) -> review, not just a name mismatch later', in_array('missing field: surname', $r['review'], true), true);
+
 echo "\nMrzCheck::repairDocNumber (regression: all-digit candidates)\n";
 $repaired = null;
 $ok = true;
