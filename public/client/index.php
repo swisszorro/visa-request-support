@@ -56,6 +56,9 @@ session_write_close();
 
 $d = static fn (string $k): string => h($cfg['defaults'][$k] ?? '');
 $host = (string) parse_url($cfg['api_url'], PHP_URL_HOST);
+// Absolute path of submit.php, independent of how the page was opened (/client, /client/, /client/index.php,
+// or below a sub-directory): a relative 'submit.php' would resolve to /submit.php when the trailing slash is missing.
+$submitUrl = rtrim(str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAME'] ?? '/client/index.php'))), '/') . '/submit.php';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -159,6 +162,7 @@ $host = (string) parse_url($cfg['api_url'], PHP_URL_HOST);
 <script nonce="<?= $nonce ?>">
 const $ = id => document.getElementById(id);
 const MAX_IMAGES = <?= (int) $cfg['max_images'] ?>;
+const SUBMIT_URL = <?= json_encode($submitUrl, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const tbody = id => $(id).querySelector('tbody');
 
@@ -173,9 +177,9 @@ $('form').addEventListener('submit', async (e) => {
   $('submit').disabled = true;
   $('status').textContent = 'Processing … (the image analysis can take a few minutes, please do not close this page)';
   try {
-    const res = await fetch('submit.php', { method: 'POST', body: new FormData($('form')), credentials: 'same-origin' });
+    const res = await fetch(SUBMIT_URL, { method: 'POST', body: new FormData($('form')), credentials: 'same-origin' });
     let data;
-    try { data = await res.json(); } catch { data = { ok: false, error: `Unexpected response (HTTP ${res.status}).` }; }
+    try { data = await res.json(); } catch { data = { ok: false, error: `Unexpected response from ${SUBMIT_URL} (HTTP ${res.status}).` }; }
     render(data);
   } catch (err) {
     render({ ok: false, error: 'Connection failed: ' + err.message });
