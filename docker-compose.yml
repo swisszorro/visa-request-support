@@ -11,5 +11,9 @@ services:
       - ./public:/app/public
       - ./resources:/app/resources
       - ./tests:/app/tests
+      - ./config:/app/config
       - ./storage:/app/storage
+    environment:
+      # the built-in server is single-threaded: the client form calls this same service, so it needs >1 worker
+      PHP_CLI_SERVER_WORKERS: "4"
     restart: unless-stopped

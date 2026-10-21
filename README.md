@@ -252,6 +252,30 @@ die WP-Domain setzen; Request-Timeout beachten (viele Bilder → parallelisiert,
 
 ---
 
+## 3c. Client-Formular (`public/client/`)
+
+Weboberfläche für Verbände: dieselben Eingaben wie `public/test/index.html`, aber **ohne** API-Key im Browser. Die Seite sendet an
+`public/client/submit.php`; dieser Server-Proxy ruft die API mit den Verbindungsdaten aus **`config/client.php`** auf (bewusst nicht in `.env`).
+
+```bash
+cp config/client.example.php config/client.php     # Datei ist gitignored und liegt ausserhalb von public/
+php -r 'echo password_hash("das-passwort", PASSWORD_DEFAULT), "\n";'   # Hash für einen Benutzer erzeugen
+```
+
+| Schlüssel | Bedeutung |
+|-----------|-----------|
+| `api_url` | Basis-URL des Visa-Services (aufgerufen wird `<api_url>/api/visa-request`) |
+| `api_key` | einer der `SERVICE_API_KEYS` |
+| `hmac_secret` | nur falls der Service `SERVICE_HMAC_SECRET` verlangt |
+| `users` | `benutzername => password_hash` (HTTP-Basic-Anmeldung für das Formular) |
+| `allow_anonymous` | nur für Tests auf localhost; ohne Benutzer bleibt die Seite gesperrt (fail-closed) |
+| `defaults` | vorbefüllte Felder (`country`, `federation`, …) |
+| `timeout`, `max_images`, `verify_tls` | optional |
+
+Anderer Speicherort: Umgebungsvariable `BWC_CLIENT_CONFIG=/pfad/zur/client.php`. Schutz: HTTP Basic, CSRF-Token, CSP mit Nonce,
+keine CORS-Header, Redirects werden nie gefolgt (der Key wird nie an ein Weiterleitungsziel gesendet). Ruft das Formular denselben Server auf
+(Standard bei einem Server), braucht der PHP-Entwicklungsserver mehrere Worker (`PHP_CLI_SERVER_WORKERS`, in `docker-compose.yml` gesetzt).
+
 ## 4. Authentisierung (Empfehlung für automatisierten Aufruf)
 
 Für unbeaufsichtigte (Server-zu-Server-)Aufrufe ist **HTTPS + API-Key im Header** der pragmatische

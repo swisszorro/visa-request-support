@@ -19,3 +19,6 @@
 # local secrets / editor
 .env.*
 !.env.example
+
+# connection settings of the client form (API key!) - see config/client.example.php
+/config/client.php

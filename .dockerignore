@@ -1,0 +1,12 @@
+# keep secrets, logs, passport copies and VCS data out of the image
+.git
+.env
+.env.*
+!.env.example
+config/client.php
+storage/*
+!storage/tmp/.gitkeep
+!storage/output/.gitkeep
+gotenberg.zip
+*.log
+**/.DS_Store
