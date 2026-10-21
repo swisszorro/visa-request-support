@@ -169,7 +169,7 @@ final class ClientPortal
         try {
             $resp = (new Client($opts))->post($cfg['api_url'] . '/api/visa-request', ['headers' => $headers, 'multipart' => $multipart]);
         } catch (\Throwable) {
-            return self::error(502, 'Der Visa-Service ist nicht erreichbar oder hat nicht rechtzeitig geantwortet.');
+            return self::error(502, 'The visa service is unreachable or did not answer in time.');
         } finally {
             foreach ($multipart as $part) {
                 if (is_resource($part['contents'] ?? null)) {
@@ -180,12 +180,12 @@ final class ClientPortal
 
         if (in_array($resp->getStatusCode(), [401, 403], true)) {
             // wrong key / HMAC: a configuration problem, not a login prompt for the user
-            return self::error(502, 'Der Visa-Service hat die Zugangsdaten der Client-Konfiguration abgelehnt (api_key / hmac_secret prüfen).');
+            return self::error(502, 'The visa service rejected the credentials of the client configuration (check api_key / hmac_secret).');
         }
         $body = (string) $resp->getBody();
         $json = json_decode($body, true);
         if (!is_array($json)) {
-            return self::error(502, 'Unerwartete Antwort des Visa-Services (HTTP ' . $resp->getStatusCode() . ').');
+            return self::error(502, 'Unexpected response from the visa service (HTTP ' . $resp->getStatusCode() . ').');
         }
         return ['status' => $resp->getStatusCode(), 'body' => $body];
     }
