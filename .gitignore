@@ -22,3 +22,6 @@
 
 # connection settings of the client form (API key!) - see config/client.example.php
 /config/client.php
+
+# API clients of the service (API keys, SMTP passwords!) - see config/clients.example.php
+/config/clients.php

@@ -4,6 +4,7 @@
 .env.*
 !.env.example
 config/client.php
+config/clients.php
 storage/*
 !storage/tmp/.gitkeep
 !storage/output/.gitkeep

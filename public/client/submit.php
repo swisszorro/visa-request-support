@@ -33,14 +33,28 @@ try {
     respond(503, $e->getMessage());
 }
 
-$auth = ClientPortal::authenticate($cfg, ClientPortal::authorizationHeader());
-if ($auth === 'unconfigured') {
+$identity = ClientPortal::identify($cfg, ClientPortal::authorizationHeader());
+if ($identity['status'] === 'unconfigured') {
     respond(503, 'Access protection is not configured (config/client.php: users).');
 }
-if ($auth !== 'ok') {
+if ($identity['status'] !== 'ok') {
     header('WWW-Authenticate: Basic realm="BWC Visa Client", charset="UTF-8"');
     respond(401, 'Login required.');
 }
+
+// Which API key / client? Only one the signed-in user is assigned to; a single allowed connection needs no choice.
+$allowed = ClientPortal::allowedConnections($cfg, $identity['user']);
+if ($allowed === []) {
+    respond(403, 'Your user is not assigned to any connection.');
+}
+$connectionId = (string) ($_POST['connection'] ?? '');
+if ($connectionId === '' && count($allowed) === 1) {
+    $connectionId = (string) array_key_first($allowed);
+}
+if (!isset($allowed[$connectionId])) {
+    respond(403, 'This connection is not available for your user.');
+}
+$conn = ClientPortal::connection($cfg, $connectionId);
 
 session_set_cookie_params(['httponly' => true, 'samesite' => 'Strict', 'secure' => !empty($_SERVER['HTTPS'])]);
 session_start();
@@ -106,6 +120,6 @@ if ($count > $cfg['max_images']) {
 }
 
 @set_time_limit($cfg['timeout'] + 30);
-$res = ClientPortal::forward($cfg, $fields, $files);
+$res = ClientPortal::forward($conn, $fields, $files);
 http_response_code($res['status']);
 echo $res['body'];

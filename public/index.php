@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use BWC\Visa\Auth;
+use BWC\Visa\ClientRegistry;
 use BWC\Visa\Config;
 use BWC\Visa\VisaController;
 use Monolog\Formatter\LineFormatter;
@@ -71,12 +72,25 @@ $app->get('/health', function (Request $req, Response $res): Response {
 });
 
 $app->post('/api/visa-request', function (Request $request, Response $response) use ($storageDir, $logger, $extractionLogger): Response {
-    $auth = Auth::check($request);
-    if (!$auth['ok']) {
-        $response->getBody()->write(json_encode(['ok' => false, 'error' => $auth['error']]));
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(401);
+    $json = static function (Response $res, int $status, array $data): Response {
+        $res->getBody()->write((string) json_encode($data, JSON_UNESCAPED_UNICODE));
+        return $res->withHeader('Content-Type', 'application/json')->withStatus($status);
+    };
+
+    // client configuration (config/clients.php): a malformed file must not silently drop a client
+    try {
+        $registry = ClientRegistry::load();
+    } catch (\RuntimeException $e) {
+        $logger->error('Client configuration invalid', ['error' => $e->getMessage()]);
+        return $json($response, 500, ['ok' => false, 'error' => 'Service misconfigured: client configuration is invalid.']);
     }
-    return (new VisaController($storageDir, $logger, $extractionLogger))->handle($request, $response);
+
+    $auth = Auth::check($request, $registry);
+    if (!$auth['ok']) {
+        return $json($response, $auth['status'], ['ok' => false, 'error' => $auth['error']]);
+    }
+    // the profile of the API key decides SMTP server, mail texts, event window and letter template
+    return (new VisaController($storageDir, $logger, $extractionLogger, $auth['client']))->handle($request, $response);
 });
 
 $app->run();

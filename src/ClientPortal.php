@@ -21,7 +21,12 @@ final class ClientPortal
     }
 
     /**
-     * @return array{api_url:string,api_key:string,hmac_secret:string,users:array<string,string>,allow_anonymous:bool,defaults:array<string,string>,timeout:int,max_images:int,verify_tls:bool}
+     * Loads and validates the client form configuration.
+     *
+     * One connection (api_url + api_key at the top level) or several ("connections": id => settings,
+     * one per API key / client of the visa service). Users may be restricted to some connections.
+     *
+     * @return array{connections:array<string,array{id:string,label:string,api_url:string,api_key:string,hmac_secret:string}>,users:array<string,array{hash:string,connections:?array<int,string>}>,allow_anonymous:bool,defaults:array<string,string>,timeout:int,max_images:int,verify_tls:bool}
      * @throws \RuntimeException with a message that is safe to show
      */
     public static function load(?string $path = null): array
@@ -37,26 +42,42 @@ final class ClientPortal
             throw new \RuntimeException('Client configuration is invalid: the file must return an array.');
         }
 
-        $url = rtrim(trim((string) ($cfg['api_url'] ?? '')), '/');
-        if (!preg_match('#^https?://[^/\s]+#i', $url)) {
-            throw new \RuntimeException('Client configuration: api_url must be a http(s) URL.');
-        }
-        $key = trim((string) ($cfg['api_key'] ?? ''));
-        if ($key === '' || $key === 'change-me') {
-            throw new \RuntimeException('Client configuration: api_key is not set.');
+        $connections = [];
+        $raw = $cfg['connections'] ?? null;
+        if (is_array($raw) && $raw !== []) {
+            foreach ($raw as $id => $c) {
+                if (!is_string($id) || !preg_match('/^[a-z0-9][a-z0-9_-]{0,39}$/', $id) || !is_array($c)) {
+                    throw new \RuntimeException("Client configuration: connection ids must be lower-case words (a-z, 0-9, _, -) mapped to arrays.");
+                }
+                $connections[$id] = self::normaliseConnection($c, "Client configuration (connection '{$id}')", $id);
+            }
+        } else {
+            // single connection: api_url / api_key at the top level
+            $connections['default'] = self::normaliseConnection($cfg, 'Client configuration', 'default');
         }
 
         $users = [];
-        foreach ((array) ($cfg['users'] ?? []) as $name => $hash) {
-            if (is_string($name) && $name !== '' && is_string($hash) && $hash !== '') {
-                $users[$name] = $hash;
+        foreach ((array) ($cfg['users'] ?? []) as $name => $entry) {
+            if (!is_string($name) || $name === '') {
+                continue;
             }
+            $hash = is_array($entry) ? (string) ($entry['password_hash'] ?? $entry['hash'] ?? '') : (string) $entry;
+            if ($hash === '') {
+                continue;
+            }
+            $allowed = null; // null = every connection
+            if (is_array($entry) && isset($entry['connections'])) {
+                $allowed = array_values(array_map('strval', (array) $entry['connections']));
+                $unknown = array_diff($allowed, array_keys($connections));
+                if ($unknown !== []) {
+                    throw new \RuntimeException("Client configuration: user '{$name}' refers to unknown connection(s): " . implode(', ', $unknown) . '.');
+                }
+            }
+            $users[$name] = ['hash' => $hash, 'connections' => $allowed];
         }
 
         return [
-            'api_url'         => $url,
-            'api_key'         => $key,
-            'hmac_secret'     => (string) ($cfg['hmac_secret'] ?? ''),
+            'connections'     => $connections,
             'users'           => $users,
             'allow_anonymous' => (bool) ($cfg['allow_anonymous'] ?? false),
             'defaults'        => array_map('strval', array_filter((array) ($cfg['defaults'] ?? []), 'is_scalar')),
@@ -64,6 +85,54 @@ final class ClientPortal
             'max_images'      => max(1, (int) ($cfg['max_images'] ?? 24)),
             'verify_tls'      => (bool) ($cfg['verify_tls'] ?? true),
         ];
+    }
+
+    /**
+     * @param array<string,mixed> $c
+     * @return array{id:string,label:string,api_url:string,api_key:string,hmac_secret:string}
+     */
+    private static function normaliseConnection(array $c, string $where, string $id): array
+    {
+        $url = rtrim(trim((string) ($c['api_url'] ?? '')), '/');
+        if (!preg_match('#^https?://[^/\s]+#i', $url)) {
+            throw new \RuntimeException("{$where}: api_url must be a http(s) URL.");
+        }
+        $key = trim((string) ($c['api_key'] ?? ''));
+        if ($key === '' || $key === 'change-me') {
+            throw new \RuntimeException("{$where}: api_key is not set.");
+        }
+        return [
+            'id'          => $id,
+            'label'       => trim((string) ($c['label'] ?? '')) !== '' ? trim((string) $c['label']) : $id,
+            'api_url'     => $url,
+            'api_key'     => $key,
+            'hmac_secret' => (string) ($c['hmac_secret'] ?? ''),
+        ];
+    }
+
+    /**
+     * The connections a user may use (all of them unless the user is restricted).
+     *
+     * @return array<string,array{id:string,label:string,api_url:string,api_key:string,hmac_secret:string}>
+     */
+    public static function allowedConnections(array $cfg, ?string $user): array
+    {
+        $all = $cfg['connections'];
+        $only = ($user !== null) ? ($cfg['users'][$user]['connections'] ?? null) : null;
+        return $only === null ? $all : array_intersect_key($all, array_flip($only));
+    }
+
+    /**
+     * One connection merged with the global settings, ready for forward().
+     *
+     * @return array{id:string,label:string,api_url:string,api_key:string,hmac_secret:string,timeout:int,verify_tls:bool}
+     */
+    public static function connection(array $cfg, string $id): array
+    {
+        if (!isset($cfg['connections'][$id])) {
+            throw new \OutOfBoundsException("Unknown connection '{$id}'.");
+        }
+        return $cfg['connections'][$id] + ['timeout' => $cfg['timeout'], 'verify_tls' => $cfg['verify_tls']];
     }
 
     // ---- access protection -------------------------------------------------
@@ -90,27 +159,38 @@ final class ClientPortal
     }
 
     /**
-     * @param array<string,string> $users username => password_hash()
+     * @param array<string,string|array{hash:string}> $cfg['users'] username => password_hash() (or ['hash' => ...])
      * @return string 'ok' | 'denied' | 'unconfigured' (no users and anonymous access not allowed)
      */
     public static function authenticate(array $cfg, string $authorization): string
     {
+        return self::identify($cfg, $authorization)['status'];
+    }
+
+    /**
+     * Same as authenticate(), plus the name of the signed-in user (null for anonymous access).
+     *
+     * @return array{status:string,user:?string}
+     */
+    public static function identify(array $cfg, string $authorization): array
+    {
         $users = $cfg['users'] ?? [];
         if ($users === []) {
-            return !empty($cfg['allow_anonymous']) ? 'ok' : 'unconfigured';
+            return ['status' => !empty($cfg['allow_anonymous']) ? 'ok' : 'unconfigured', 'user' => null];
         }
         if (stripos($authorization, 'basic ') !== 0) {
-            return 'denied';
+            return ['status' => 'denied', 'user' => null];
         }
         $decoded = base64_decode(trim(substr($authorization, 6)), true);
         if ($decoded === false || !str_contains($decoded, ':')) {
-            return 'denied';
+            return ['status' => 'denied', 'user' => null];
         }
         [$user, $pass] = explode(':', $decoded, 2);
+        $entry = $users[$user] ?? null;
+        $hash = is_array($entry) ? (string) ($entry['hash'] ?? '') : (string) $entry;
         // same work for unknown users: no user enumeration by timing
-        $hash = $users[$user] ?? '$2y$10$usesomesillystringfore7hnbRJHxXVLeakoG8K30oukPsA.ztMG';
-        $ok = password_verify($pass, $hash);
-        return ($ok && isset($users[$user])) ? 'ok' : 'denied';
+        $ok = password_verify($pass, $hash !== '' ? $hash : '$2y$10$usesomesillystringfore7hnbRJHxXVLeakoG8K30oukPsA.ztMG');
+        return ($ok && $hash !== '') ? ['status' => 'ok', 'user' => $user] : ['status' => 'denied', 'user' => null];
     }
 
     // ---- CSRF ----------------------------------------------------------------

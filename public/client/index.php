@@ -40,13 +40,19 @@ try {
     fail(503, 'Form unavailable', $e->getMessage(), $nonce);
 }
 
-$auth = ClientPortal::authenticate($cfg, ClientPortal::authorizationHeader());
-if ($auth === 'unconfigured') {
+$identity = ClientPortal::identify($cfg, ClientPortal::authorizationHeader());
+if ($identity['status'] === 'unconfigured') {
     fail(503, 'Access protection missing', 'No user (users) is configured in config/client.php. For security reasons the form stays locked.', $nonce);
 }
-if ($auth !== 'ok') {
+if ($identity['status'] !== 'ok') {
     header('WWW-Authenticate: Basic realm="BWC Visa Client", charset="UTF-8"');
     fail(401, 'Login required', 'Please sign in with your username and password.', $nonce);
+}
+
+// the connections (= API keys / clients of the visa service) this user may use
+$connections = ClientPortal::allowedConnections($cfg, $identity['user']);
+if ($connections === []) {
+    fail(403, 'No client assigned', 'Your user is not assigned to any connection. Please contact the administrator.', $nonce);
 }
 
 session_set_cookie_params(['httponly' => true, 'samesite' => 'Strict', 'secure' => !empty($_SERVER['HTTPS'])]);
@@ -55,7 +61,8 @@ $csrf = ClientPortal::csrfToken();
 session_write_close();
 
 $d = static fn (string $k): string => h($cfg['defaults'][$k] ?? '');
-$host = (string) parse_url($cfg['api_url'], PHP_URL_HOST);
+$single = count($connections) === 1 ? reset($connections) : null;
+$host = $single !== null ? (string) parse_url($single['api_url'], PHP_URL_HOST) : '';
 // Absolute path of submit.php, independent of how the page was opened (/client, /client/, /client/index.php,
 // or below a sub-directory): a relative 'submit.php' would resolve to /submit.php when the trailing slash is missing.
 $submitUrl = rtrim(str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAME'] ?? '/client/index.php'))), '/') . '/submit.php';
@@ -78,6 +85,7 @@ $submitUrl = rtrim(str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAM
   .card { background: var(--card); border:1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 18px; }
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing:.06em; color: var(--mut); margin: 0 0 14px; }
   label { display:block; font-size: 13px; margin: 10px 0 4px; color: var(--mut); }
+  select { width:100%; padding:9px 11px; border-radius:8px; border:1px solid var(--line); background:#0b1220; color:var(--txt); font-size:14px; }
   input[type=text], input[type=file], input[type=email] { width:100%; padding:9px 11px; border-radius:8px; border:1px solid var(--line); background:#0b1220; color:var(--txt); font-size:14px; }
   .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
   @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
@@ -101,10 +109,24 @@ $submitUrl = rtrim(str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAM
 <body>
 <div class="wrap">
   <h1>Berne World Cup · Visa Request</h1>
-  <p class="sub">Upload the Excel list and the passport copies – the invitation letter is created automatically. Service: <code><?= h($host) ?></code></p>
+  <p class="sub">Upload the Excel list and the passport copies – the invitation letter is created automatically.<?php if ($host !== '') : ?> Service: <code><?= h($host) ?></code><?php endif; ?></p>
 
   <form id="form" autocomplete="off">
     <input type="hidden" name="csrf" value="<?= h($csrf) ?>" />
+
+<?php if ($single === null) : ?>
+    <div class="card">
+      <h2>Event / client</h2>
+      <label for="connection">Which client are you submitting for?</label>
+      <select id="connection" name="connection" required>
+<?php foreach ($connections as $id => $c) : ?>
+        <option value="<?= h($id) ?>"><?= h($c['label']) ?></option>
+<?php endforeach; ?>
+      </select>
+    </div>
+<?php else : ?>
+    <input type="hidden" name="connection" value="<?= h($single['id']) ?>" />
+<?php endif; ?>
 
     <div class="card">
       <h2>Requesting national federation</h2>
