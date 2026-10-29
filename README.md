@@ -167,7 +167,7 @@ Query: `?format=json` (Default) oder `?format=pdf` (liefert reines PDF).
                       { "field": "expiry_date", "expected": "2023-04-14", "found": "2023-04-15" }
                     ] } ],
   "details":    [ /* pro Antragsteller: matched, source_image, checks{feld:{expected,found,ok,required}} */ ],
-  "pdf_filename": "BWC_Visa_Invitation.pdf",
+  "pdf_filename": "BWC Visa Invitation Letter.pdf",
   "pdf_base64": "JVBERi0xLjcK..."
 }
 ```
@@ -243,7 +243,7 @@ Gravity Flow sendet keine Datei-Binärdaten, sondern die **URLs** der hochgelade
 | `email_subject` | Betreff, exakt wie an den Antragsteller gesendet |
 | `email_body` | Mail-Text, exakt wie an den Antragsteller gesendet |
 | `email_attachment` | Dateiname des Anhangs (leer, wenn nichts angehängt wurde) |
-| `document_filename` | Dateiname des Schreibens |
+| `document_filename` | Dateiname des Schreibens: Name der Word-Vorlage des Clients ohne `.docx`, mit `.pdf` (bzw. `.docx`) |
 
 `document_base64` **nicht** mappen (zu gross). Bei Fehler steht die Ursache in `error` (400/500).
 
