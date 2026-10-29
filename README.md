@@ -252,6 +252,62 @@ die WP-Domain setzen; Request-Timeout beachten (viele Bilder → parallelisiert,
 
 ---
 
+## 3c. Client-Formular (`public/client/`)
+
+Weboberfläche für Verbände: dieselben Eingaben wie `public/test/index.html`, aber **ohne** API-Key im Browser. Die Seite sendet an
+`public/client/submit.php`; dieser Server-Proxy ruft die API mit den Verbindungsdaten aus **`config/client.php`** auf (bewusst nicht in `.env`).
+
+```bash
+cp config/client.example.php config/client.php     # Datei ist gitignored und liegt ausserhalb von public/
+php -r 'echo password_hash("das-passwort", PASSWORD_DEFAULT), "\n";'   # Hash für einen Benutzer erzeugen
+```
+
+| Schlüssel | Bedeutung |
+|-----------|-----------|
+| `api_url` | Basis-URL des Visa-Services (aufgerufen wird `<api_url>/api/visa-request`) |
+| `api_key` | einer der `SERVICE_API_KEYS` |
+| `hmac_secret` | nur falls der Service `SERVICE_HMAC_SECRET` verlangt |
+| `users` | `benutzername => password_hash` (HTTP-Basic-Anmeldung für das Formular) |
+| `allow_anonymous` | nur für Tests auf localhost; ohne Benutzer bleibt die Seite gesperrt (fail-closed) |
+| `defaults` | vorbefüllte Felder (`country`, `federation`, …) |
+| `timeout`, `max_images`, `verify_tls` | optional |
+
+Anderer Speicherort: Umgebungsvariable `BWC_CLIENT_CONFIG=/pfad/zur/client.php`. Schutz: HTTP Basic, CSRF-Token, CSP mit Nonce,
+keine CORS-Header, Redirects werden nie gefolgt (der Key wird nie an ein Weiterleitungsziel gesendet). Ruft das Formular denselben Server auf
+(Standard bei einem Server), braucht der PHP-Entwicklungsserver mehrere Worker (`PHP_CLI_SERVER_WORKERS`, in `docker-compose.yml` gesetzt).
+
+## 3d. Mehrere Clients (`config/clients.php`)
+
+Der API-Key entscheidet, **für welchen Client** eine Anfrage gilt. Jeder Client hat seine eigenen Einstellungen:
+
+| Bereich | Schlüssel in `config/clients.php` | entspricht in `.env` |
+|---------|-----------------------------------|----------------------|
+| API-Key(s) | `api_keys` (mehrere = Key-Rotation), `api_key_hashes` (sha256 statt Klartext), optional `hmac_secret` | `SERVICE_API_KEYS`, `SERVICE_HMAC_SECRET` |
+| SMTP-Server | `smtp`: `host`, `port`, `secure` (`tls`/`ssl`/`none`), `user`, `pass` | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS` |
+| Mail | `mail`: `enabled`, `default_to`, `subject`, `from`, `from_name`, `html`, `body` | `MAIL_ENABLED`, `MAIL_DEFAULT_TO`, `MAIL_SUBJECT`, `MAIL_FROM`, `MAIL_FROM_NAME`, `MAIL_HTML`, `MAIL_BODY` |
+| Event-Fenster | `event`: `start`, `end` | `EVENT_START`, `EVENT_END` |
+| Vorlage | `template` (Pfad zur `.docx`, relativ zum Projektordner oder absolut) | `LETTER_TEMPLATE` |
+
+```bash
+cp config/clients.example.php config/clients.php     # gitignored; anderer Ort: BWC_CLIENTS_CONFIG=/pfad/clients.php
+openssl rand -hex 32                                 # neuen API-Key erzeugen
+```
+
+Regeln:
+- **Die Keys aus `.env` (`SERVICE_API_KEYS`) bleiben der Client `default`** und nutzen weiter alle `.env`-Werte. Die Vorlage des
+  Standard-Clients ist jetzt über `LETTER_TEMPLATE` konfigurierbar (Default `resources/BWC Visa Invitation Letter.docx`).
+- **Ein benannter Client erbt nichts aus der `.env`.** Er kann nie versehentlich mit den SMTP-Zugangsdaten oder dem Absender eines anderen
+  Clients senden; was nicht gesetzt ist, bleibt leer bzw. aus.
+- Ein Key darf nur zu einem Client gehören; Tippfehler in Einstellungsnamen, ungültige Daten oder ein fehlender Key sind ein **Fehler**
+  (der Service antwortet `500 Service misconfigured: client configuration is invalid`, Details im `visa.log`) und werden nicht still ignoriert.
+- Die **Vorlage** wird vor der (kostenpflichtigen) Bildanalyse geprüft: Datei vorhanden und ein echtes `.docx`. Weitere Vorlagen müssen dieselbe
+  Struktur wie die BWC-Vorlage haben (eine Tabelle mit Kopfzeile + Musterzeile, Platzhalter `<National Federation>`, `<Address>`, `<Country>`, `<Name>`,
+  `<Firstname>`, `<E-Mail>`).
+- Die Antwort enthält `client` (die Client-ID); `visa.log` und `passport-reads.log` nennen den Client pro Anfrage.
+
+Das **Client-Formular** (`config/client.php`, Abschnitt 3c) kennt dafür `connections`: je Client eine Verbindung (`label`, `api_url`, `api_key`).
+Ab zwei Verbindungen zeigt das Formular eine Auswahl; Benutzer lassen sich mit `'connections' => ['bwc']` auf bestimmte Clients beschränken.
+
 ## 4. Authentisierung (Empfehlung für automatisierten Aufruf)
 
 Für unbeaufsichtigte (Server-zu-Server-)Aufrufe ist **HTTPS + API-Key im Header** der pragmatische

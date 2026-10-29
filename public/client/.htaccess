@@ -1,0 +1,20 @@
+# Client form: own rules, because mod_rewrite rules of public/.htaccess are not inherited here.
+
+# Apache/CGI strips the Authorization header - hand it to PHP so HTTP Basic auth works.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule ^ - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+</IfModule>
+
+# The parent .htaccess allows any origin (needed for the API test page). The client form is
+# same-origin only and answers with personal data: remove the CORS headers here.
+<IfModule mod_headers.c>
+    Header always unset Access-Control-Allow-Origin
+    Header always unset Access-Control-Allow-Headers
+    Header always unset Access-Control-Allow-Methods
+    Header always set Cache-Control "no-store"
+</IfModule>
+
+DirectoryIndex index.php
+Options -Indexes

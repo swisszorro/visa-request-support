@@ -70,24 +70,33 @@ final class PdfConverter
         }
         $endpoint = rtrim($this->gotenbergUrl, '/') . '/forms/libreoffice/convert';
 
-        $opts = [
-            'http_errors' => false, // inspect the body ourselves for clear errors
-            'multipart' => [[
-                'name'     => 'files',
-                'contents' => fopen($docxPath, 'r'),
-                // explicit .docx filename + MIME so Gotenberg recognises the format
-                'filename' => 'invitation.docx',
-                'headers'  => ['Content-Type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-            ]],
-        ];
-        if ($this->gotenbergUser !== '') {
-            $opts['auth'] = [$this->gotenbergUser, $this->gotenbergPass];
-        }
-
-        try {
-            $resp = (new Client(['timeout' => 120, 'connect_timeout' => 10]))->post($endpoint, $opts);
-        } catch (GuzzleException $e) {
-            throw new \RuntimeException('Gotenberg not reachable at ' . $endpoint . ': ' . $e->getMessage(), 0, $e);
+        // Transport errors (TLS reset, timeout, connection refused) are retried: the conversion is free,
+        // but giving up now would waste the already paid image analysis. HTTP answers are never retried.
+        $resp = null;
+        $attempts = 3;
+        for ($i = 1; $i <= $attempts; $i++) {
+            $opts = [
+                'http_errors' => false, // inspect the body ourselves for clear errors
+                'multipart' => [[
+                    'name'     => 'files',
+                    'contents' => fopen($docxPath, 'r'), // a stream is consumed by an attempt: reopen each time
+                    // explicit .docx filename + MIME so Gotenberg recognises the format
+                    'filename' => 'invitation.docx',
+                    'headers'  => ['Content-Type' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+                ]],
+            ];
+            if ($this->gotenbergUser !== '') {
+                $opts['auth'] = [$this->gotenbergUser, $this->gotenbergPass];
+            }
+            try {
+                $resp = (new Client(['timeout' => 120, 'connect_timeout' => 10]))->post($endpoint, $opts);
+                break;
+            } catch (GuzzleException $e) {
+                if ($i === $attempts) {
+                    throw new \RuntimeException('Gotenberg not reachable at ' . $endpoint . ' after ' . $attempts . ' attempts: ' . $e->getMessage(), 0, $e);
+                }
+                usleep($i * 500_000); // 0.5 s, 1 s
+            }
         }
 
         $status = $resp->getStatusCode();

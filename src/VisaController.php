@@ -20,11 +20,16 @@ final class VisaController
     private const TEXT_FIELDS = ['name', 'firstname', 'address', 'zip', 'city', 'country', 'federation'];
     private const ALLOWED_IMG = ['png', 'jpg', 'jpeg', 'gif', 'pdf'];
 
+    private readonly ClientProfile $client;
+
     public function __construct(
         private readonly string $storageDir,
         private readonly LoggerInterface $logger,
         private readonly LoggerInterface $extractionLogger,
+        ?ClientProfile $client = null,
     ) {
+        // the profile of the API key that made the request (SMTP, mail texts, event window, template)
+        $this->client = $client ?? ClientProfile::legacy();
     }
 
     public function handle(Request $request, Response $response): Response
@@ -82,6 +87,7 @@ final class VisaController
             'document_mime'     => $result['doc_mime'],
             'email'             => $result['email'],
             'request_id'        => $jobId,
+            'client'            => $this->client->id,
             'incomplete'        => $result['incomplete'],
             'file_diagnostics'  => $result['file_diagnostics'],
             // flat top-level keys for easy Gravity Flow "Response Body" mapping
@@ -107,6 +113,9 @@ final class VisaController
      */
     private function process(Request $request, string $work, string $jobId): array
     {
+        // The client's letter template is checked before anything paid (image analysis) happens.
+        $template = $this->client->templatePath();
+
         // ---- 1. text fields -------------------------------------------------
         $params = (array) $request->getParsedBody();
         // Fallback: some callers (e.g. Gravity Flow) send a JSON body with a
@@ -248,8 +257,8 @@ final class VisaController
             Config::bool('PLACE_OF_BIRTH_WARN_ONLY', true),
             Config::int('PASSPORT_MIN_VALIDITY_MONTHS', 6),
             null,
-            Config::str('EVENT_START', '') ?: null,
-            Config::str('EVENT_END', '') ?: null,
+            $this->client->eventStart(),
+            $this->client->eventEnd(),
         );
         $results = $matcher->match($applicants, $detected);
         if ($errCount > 0) {
@@ -281,10 +290,6 @@ final class VisaController
             $failed[] = ['name' => 'Excel row ' . $sr['row'], 'date_of_birth' => '', 'status' => 'failed', 'reason' => $sr['reason'], 'mismatches' => []];
         }
         $verifiedSuccess = array_values(array_filter($results, static fn ($r) => $r['status'] === 'success'));
-        $template = dirname(__DIR__) . '/resources/BWC Visa Invitation Letter.docx';
-        if (!is_file($template)) {
-            throw new \RuntimeException('Word template not found at resources/BWC Visa Invitation Letter.docx');
-        }
         $outDocx = $work . '/invitation.docx';
         (new WordFiller())->fill(
             $template,
@@ -392,9 +397,9 @@ final class VisaController
             $rows[] = ['file' => $name, 'bytes' => $meta['bytes'], 'pages_analysed' => $pages, 'result' => $result, 'notes' => $notes];
         }
 
-        $this->logger->info('Files analysed', ['job' => $jobId, 'count' => count($rows), 'files' => $rows]);
+        $this->logger->info('Files analysed', ['job' => $jobId, 'client' => $this->client->id, 'count' => count($rows), 'files' => $rows]);
 
-        $text = str_repeat('═', 70) . "\nREQUEST " . $jobId . '  ·  ' . count($rows) . " file(s) received\n";
+        $text = str_repeat('═', 70) . "\nREQUEST " . $jobId . '  ·  client ' . $this->client->id . '  ·  '. count($rows) . " file(s) received\n";
         foreach ($rows as $r) {
             $text .= sprintf("  - %s (%d bytes, %d page(s) analysed): %s\n", $r['file'], $r['bytes'], $r['pages_analysed'], $r['result']);
             foreach ($r['notes'] as $n) {
@@ -414,17 +419,18 @@ final class VisaController
      */
     private function maybeSendEmail(array $params, array $federation, string $filename, string $binary, string $mime, array $summary, array $successful, array $failed): ?array
     {
+        $mailCfg = $this->client->mail();
         $flag = $params['send_email'] ?? null;
-        $requested = Config::bool('MAIL_ENABLED', false)
+        $requested = $mailCfg['enabled']
             || in_array(strtolower((string) $flag), ['1', 'true', 'yes', 'on'], true);
         if (!$requested) {
             return null;
         }
 
-        $subject = Config::str('MAIL_SUBJECT', 'Berne World Cup – Visa Invitation Letter');
-        $isHtml = Config::bool('MAIL_HTML', false);
+        $subject = $mailCfg['subject'];
+        $isHtml = $mailCfg['html'];
         $body = $this->buildMailBody($isHtml, $federation, $filename, $summary, $failed);
-        $from = Config::str('MAIL_FROM');
+        $from = $mailCfg['from'];
 
         // Only attach the letter if at least one applicant was verified — with
         // zero successes the PDF has no content worth sending.
@@ -450,21 +456,22 @@ final class VisaController
             $to = $this->collectEmails($federation['email']);
         }
         if ($to === []) {
-            $to = $this->collectEmails(Config::str('MAIL_DEFAULT_TO', ''));
+            $to = $this->collectEmails($mailCfg['default_to']);
         }
         if ($to === []) {
-            return ['sent' => false, 'to' => [], 'error' => 'No recipient (mail_to / federation email / MAIL_DEFAULT_TO all empty).'] + $info;
+            return ['sent' => false, 'to' => [], 'error' => 'No recipient (mail_to / federation email / default_to all empty).'] + $info;
         }
 
         try {
+            $smtp = $this->client->smtp();
             (new Mailer(
-                Config::str('SMTP_HOST'),
-                Config::int('SMTP_PORT', 587),
-                Config::str('SMTP_USER'),
-                Config::str('SMTP_PASS'),
-                strtolower(Config::str('SMTP_SECURE', 'tls')),
+                $smtp['host'],
+                $smtp['port'],
+                $smtp['user'],
+                $smtp['pass'],
+                $smtp['secure'],
                 $from,
-                Config::str('MAIL_FROM_NAME', 'Berne World Cup OC'),
+                $mailCfg['from_name'],
                 $this->logger,
             ))->send($to, $subject, $body, $attachment, $isHtml);
             return ['sent' => true, 'to' => $to] + $info;
@@ -506,7 +513,7 @@ final class VisaController
             '{failed_list}'        => $failedList,
         ];
 
-        $tpl = Config::str('MAIL_BODY', '');
+        $tpl = $this->client->mail()['body'];
         if ($tpl !== '') {
             // allow literal "\n" / "\r\n" escapes in the .env value as line breaks
             $tpl = str_replace(['\\r\\n', '\\n'], "\n", $tpl);
