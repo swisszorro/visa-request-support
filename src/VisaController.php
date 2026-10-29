@@ -57,7 +57,7 @@ final class VisaController
             $this->rrmdir($work);
         }
 
-        $filename = 'BWC_Visa_Invitation.' . $result['doc_ext'];
+        $filename = $result['doc_name'] . '.' . $result['doc_ext'];
         $format = strtolower((string) ($request->getQueryParams()['format'] ?? 'json'));
 
         // raw document download (pdf or docx, whatever was produced)
@@ -65,7 +65,7 @@ final class VisaController
             $response->getBody()->write($result['doc_binary']);
             return $response
                 ->withHeader('Content-Type', $result['doc_mime'])
-                ->withHeader('Content-Disposition', 'attachment; filename="' . $filename . '"')
+                ->withHeader('Content-Disposition', self::contentDisposition($filename))
                 ->withStatus(200);
         }
 
@@ -290,6 +290,7 @@ final class VisaController
             $failed[] = ['name' => 'Excel row ' . $sr['row'], 'date_of_birth' => '', 'status' => 'failed', 'reason' => $sr['reason'], 'mismatches' => []];
         }
         $verifiedSuccess = array_values(array_filter($results, static fn ($r) => $r['status'] === 'success'));
+        $docName = self::documentName($template);
         $outDocx = $work . '/invitation.docx';
         (new WordFiller())->fill(
             $template,
@@ -337,7 +338,7 @@ final class VisaController
         $email = $this->maybeSendEmail(
             $params,
             $federation,
-            'BWC_Visa_Invitation.' . $docExt,
+            $docName . '.' . $docExt,
             $docBinary,
             $docMime,
             $summary,
@@ -353,6 +354,7 @@ final class VisaController
             'doc_binary' => $docBinary,
             'doc_mime'   => $docMime,
             'doc_ext'    => $docExt,
+            'doc_name'   => $docName,
             'email'      => $email,
             'file_diagnostics' => $fileDiag,
             'incomplete' => $errCount > 0,
@@ -712,6 +714,21 @@ final class VisaController
         $path = $work . '/' . bin2hex(random_bytes(4)) . '.' . $ext;
         file_put_contents($path, $bytes);
         return ['path' => $path, 'name' => $name];
+    }
+
+    /** File name of the delivered letter: the name of the Word template without ".docx". */
+    private static function documentName(string $templatePath): string
+    {
+        $name = pathinfo($templatePath, PATHINFO_FILENAME);
+        $name = trim(preg_replace('/[\\x00-\\x1f\\x7f"\\\\\/:*?<>|]+/u', '_', $name) ?? '');
+        return $name !== '' ? $name : 'Visa Invitation Letter';
+    }
+
+    /** attachment header with an ASCII fallback and the exact UTF-8 name (RFC 6266) */
+    private static function contentDisposition(string $filename): string
+    {
+        $ascii = preg_replace('/[^\x20-\x7e]/u', '_', $filename) ?? 'letter';
+        return 'attachment; filename="' . $ascii . '"; filename*=UTF-8\'\'' . rawurlencode($filename);
     }
 
     private function json(Response $response, int $status, array $data): Response
